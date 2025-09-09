@@ -71,28 +71,53 @@ namespace ConfigurePromotionalWeaponStats
                     return;
                 }
 
+                int weaponCount = 0;
+                int modifiedCount = 0;
+                var startTime = DateTime.Now;
+
                 foreach (var w in allWeapons)
                 {
                     try
                     {
+                        weaponCount++;
+                        
                         // weapon.Def -> WeaponDef
                         var def = w.GetType().GetProperty("Def", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.GetValue(w);
                         if (def == null) continue;
 
                         var name = def.GetType().GetProperty("name")?.GetValue(def) as string ?? def.ToString();
                         float pierce = ReadPiercingFromWeaponDef(def);
-                        _log?.LogInfo($"[CPWS] WeaponDef='{name}' Piercing={pierce}");
+                        
+                        // Only log if this is a promotional/configured weapon or has unusual piercing
+                        if (IsPromoWeapon(name) || pierce > 50 || pierce < 0)
+                        {
+                            modifiedCount++;
+                            _log?.LogInfo($"[CPWS] Notable weapon: '{name}' Piercing={pierce}");
+                        }
                     }
                     catch (Exception e)
                     {
                         _log?.LogWarning("[CPWS] Probe error on weapon: " + e.Message);
                     }
                 }
+
+                var duration = DateTime.Now - startTime;
+                _log?.LogInfo($"[CPWS] Probed {weaponCount} weapons in {duration.TotalMilliseconds:F1}ms ({modifiedCount} notable)");
             }
             catch (Exception e)
             {
                 _log?.LogWarning("[CPWS] Tactical probe failed: " + e);
             }
+        }
+
+        private static bool IsPromoWeapon(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return false;
+            
+            // Check for promotional/configured weapons
+            return name.Contains("Ares") || name.Contains("Firebird") || name.Contains("Hel") ||
+                   name.Contains("Deimos") || name.Contains("Tobias") || name.Contains("TechnicianArms") ||
+                   name.Contains("Gold") || name.Contains("PR_") || name.Contains("NW_");
         }
 
         private static float ReadPiercingFromWeaponDef(object weaponDefObj)
