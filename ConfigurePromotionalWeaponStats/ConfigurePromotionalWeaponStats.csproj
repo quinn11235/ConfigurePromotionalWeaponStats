@@ -55,6 +55,7 @@
     <Compile Include="ConfigurePromotionalWeaponStatsMain.cs" />
     <Compile Include="ConfigurePromotionalWeaponStatsTacticalProbe.cs" />
     <Compile Include="ConfigurePromotionalWeaponStatsUIDamageRows.cs" />
+    <Compile Include="Helper.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>

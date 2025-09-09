@@ -1,6 +1,8 @@
 using Base.Core;
 using Base.Defs;
+using Base.UI;
 using Base.Levels;
+using PhoenixPoint.Common.Core;
 using PhoenixPoint.Common.Entities.Items;
 using PhoenixPoint.Common.Entities.GameTags;
 using PhoenixPoint.Common.Entities.GameTagsTypes;
@@ -8,6 +10,10 @@ using PhoenixPoint.Common.Game;
 using PhoenixPoint.Modding;
 using PhoenixPoint.Tactical.Entities.DamageKeywords;
 using PhoenixPoint.Tactical.Entities.Weapons;
+using PhoenixPoint.Tactical.Entities.Abilities;
+using PhoenixPoint.Common.Entities;
+using Base.Entities.Abilities;
+using PhoenixPoint.Tactical.Entities.Animations;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -61,9 +67,13 @@ namespace ConfigurePromotionalWeaponStats
         /// Unsafely disabled mods usually cannot revert their changes in OnModDisabled
         public override bool CanSafelyDisable => true;
 
-        private WeaponDef AresGold, FirebirdGold, HelGold, FirebirdPR, WhiteNeonDeimos, NeonDeimos, TobiasHandgun;
-        private ItemDef AresClip, FirebirdClip, HelClip, DeimosClip, TobiasHandgunClip;
+        private WeaponDef AresGold, FirebirdGold, HelGold, FirebirdPR, WhiteNeonDeimos, NeonDeimos, TobiasHandgun, TechnicianArms;
+        private ItemDef AresClip, FirebirdClip, HelClip, DeimosClip, TobiasHandgunClip, TechArmsClip;
         private WeaponValues DefaultAresGold, DefaultFirebirdGold, DefaultHelGold, DefaultFirebirdPR, DefaultWhiteNeonDeimos, DefaultNeonDeimos, DefaultTobiasHandgun;
+        
+        // Store original Technician Arms abilities and damage for restoration (since it has special handling)
+        private AbilityDef[] DefaultTechArmsAbilities;
+        private List<DamageKeywordPair> DefaultTechArmsDamageKeywords;
         private bool tobiasTagFixApplied = false;
 
         /// <summary>
@@ -82,12 +92,14 @@ namespace ConfigurePromotionalWeaponStats
                 WhiteNeonDeimos = Repo.GetAllDefs<WeaponDef>().FirstOrDefault(a => a.name.Equals("SY_LaserAssaultRifle_WhiteNeon_WeaponDef"));
                 NeonDeimos = Repo.GetAllDefs<WeaponDef>().FirstOrDefault(a => a.name.Equals("SY_LaserAssaultRifle_Neon_WeaponDef"));
                 TobiasHandgun = Repo.GetAllDefs<WeaponDef>().FirstOrDefault(a => a.name.Equals("NJ_TobiasWestGun_WeaponDef"));
+                TechnicianArms = Repo.GetAllDefs<WeaponDef>().FirstOrDefault(a => a.name.Equals("NJ_Technician_MechArms_ALN_WeaponDef"));
 
                 AresClip = Repo.GetAllDefs<ItemDef>().FirstOrDefault(a => a.name.Equals("PX_AssaultRifle_AmmoClip_ItemDef"));
                 FirebirdClip = Repo.GetAllDefs<ItemDef>().FirstOrDefault(a => a.name.Equals("PX_SniperRifle_AmmoClip_ItemDef"));
                 HelClip = Repo.GetAllDefs<ItemDef>().FirstOrDefault(a => a.name.Equals("PX_HeavyCannon_AmmoClip_ItemDef"));
                 DeimosClip = Repo.GetAllDefs<ItemDef>().FirstOrDefault(a => a.name.Equals("SY_LaserAssaultRifle_AmmoClip_ItemDef"));
                 TobiasHandgunClip = Repo.GetAllDefs<ItemDef>().FirstOrDefault(a => a.name.Equals("NJ_Gauss_HandGun_AmmoClip_ItemDef"));
+                TechArmsClip = Repo.GetAllDefs<ItemDef>().FirstOrDefault(a => a.name.Equals("MechArms_AmmoClip_ItemDef"));
 
                 DefaultAresGold = getWeaponValuesFromWeaponDef(AresGold);
                 DefaultFirebirdGold = getWeaponValuesFromWeaponDef(FirebirdGold);
@@ -96,6 +108,14 @@ namespace ConfigurePromotionalWeaponStats
                 DefaultWhiteNeonDeimos = getWeaponValuesFromWeaponDef(WhiteNeonDeimos);
                 DefaultNeonDeimos = getWeaponValuesFromWeaponDef(NeonDeimos);
                 DefaultTobiasHandgun = getWeaponValuesFromWeaponDef(TobiasHandgun);
+                
+                // Store original Technician Arms abilities and damage for restoration (special handling)
+                if (TechnicianArms != null)
+                {
+                    DefaultTechArmsAbilities = TechnicianArms.Abilities?.ToArray() ?? new AbilityDef[0];
+                    DefaultTechArmsDamageKeywords = TechnicianArms.DamagePayload?.DamageKeywords?.ToList() ?? new List<DamageKeywordPair>();
+                    Logger.LogInfo($"[ConfigurePromotionalWeaponStats] Stored original TechArms abilities count: {DefaultTechArmsAbilities.Length}, damage keywords: {DefaultTechArmsDamageKeywords.Count}");
+                }
 
                 OnConfigChanged();
                 // Install UI damage row patch (handles piercing and fire)
@@ -134,6 +154,8 @@ namespace ConfigurePromotionalWeaponStats
             setDefsFromWeaponValues(DefaultNeonDeimos, NeonDeimos, DeimosClip);
             // Always revert Tobias Handgun (no longer toggleable)
             setDefsFromWeaponValues(DefaultTobiasHandgun, TobiasHandgun, TobiasHandgunClip);
+            // Always revert Technician Arms (special handling)
+            RestoreTechnicianArms();
         }
 
         /// <summary>
@@ -229,24 +251,12 @@ namespace ConfigurePromotionalWeaponStats
             SetWeaponPropertiesOnly(NeonDeimos, DeimosClip, Config.NeonDeimosArAmmoCapacity, Config.NeonDeimosArBurst, Config.NeonDeimosArProjectilesPerShot, Config.NeonDeimosArEffectiveRange, Config.NeonDeimosArApCost, Config.NeonDeimosArHandsToUse, Config.NeonDeimosArWeight, Config.NeonDeimosArStopOnFirstHit);
             
             // Setup Tobias West Handgun modifications (always active)
-            float[] TobiasHandgunDamage = { Config.TobiasHandgunDamage, Config.TobiasHandgunShred };
-            WeaponValues TobiasHandgunValues = new WeaponValues(
-                TobiasHandgunDamage,
-                Config.TobiasHandgunAmmoCapacity,
-                1, // Burst (handguns are single shot)
-                1, // ProjectilesPerShot
-                Config.TobiasHandgunEffectiveRange,
-                Config.TobiasHandgunAPCost,
-                1, // HandsToUse (handguns are 1-handed)
-                DefaultTobiasHandgun.Weight, // Keep original weight
-                true // StopOnFirstHit (typical for handguns)
-            );
-            setDefsFromWeaponValues(TobiasHandgunValues, TobiasHandgun, TobiasHandgunClip);
+            SetupTobiasHandgunDamageKeywords(TobiasHandgun, Config.TobiasHandgunDamage, Config.TobiasHandgunPiercing, Config.TobiasHandgunShred, Logger);
+            SetWeaponPropertiesOnly(TobiasHandgun, TobiasHandgunClip, Config.TobiasHandgunAmmoCapacity, 1, 1, Config.TobiasHandgunEffectiveRange, Config.TobiasHandgunAPCost, 1, DefaultTobiasHandgun.Weight, true);
             
             // TEMPORARILY DISABLED: Test without Tobias handgun tag manipulation
             if (TobiasHandgun != null)
             {
-                SetDamageKeywordValue(TobiasHandgun, "pierc", Config.TobiasHandgunPiercing, Logger);
                 
                 // DISABLED: Tag manipulation that might conflict with other mods
                 /*DefRepository Repo = GameUtl.GameComponent<DefRepository>();
@@ -274,6 +284,168 @@ namespace ConfigurePromotionalWeaponStats
                 
                 Logger.LogInfo($"Applied Tobias Handgun modifications: Damage={Config.TobiasHandgunDamage}, Shred={Config.TobiasHandgunShred}, Piercing={Config.TobiasHandgunPiercing}, AmmoCapacity={Config.TobiasHandgunAmmoCapacity}, EffectiveRange={Config.TobiasHandgunEffectiveRange}, APCost={Config.TobiasHandgunAPCost} points");
             }
+            
+            // Configure Promotional Technician Arms
+            ConfigureTechnicianArms();
+        }
+
+        /// <summary>
+        /// Configure Technician Arms with Paralyze damage and modified Full Restore ability
+        /// </summary>
+        private void ConfigureTechnicianArms()
+        {
+            if (TechnicianArms == null)
+            {
+                Logger.LogWarning("[ConfigurePromotionalWeaponStats] TechnicianArms not found");
+                return;
+            }
+
+            Logger.LogInfo("[ConfigurePromotionalWeaponStats] Configuring Technician Arms...");
+            
+            // Replace Shock damage with Base + Piercing + Paralyze damage using CPWS existing methods
+            SetupTechnicianArmsDamageKeywords(TechnicianArms, Config.TechArmsBaseDamage, Config.TechArmsPiercingDamage, Config.TechArmsParalyzingDamage, Logger);
+
+            // Add modified Full Restore ability if enabled
+            if (Config.TechArmsFullRestoreAbility)
+            {
+                AddModifiedFullRestoreAbility();
+            }
+        }
+
+        /// <summary>
+        /// Add modified Full Restore ability to Technician Arms (1 AP, 5 WP, 1 VVA-2 charge)
+        /// </summary>
+        private void AddModifiedFullRestoreAbility()
+        {
+            DefRepository repo = GameUtl.GameComponent<DefRepository>();
+            
+            // Find original Full Restore ability
+            var originalFullRestore = repo.GetAllDefs<HealAbilityDef>().FirstOrDefault(a => a.name.Equals("SY_FullRestoration_AbilityDef"));
+            if (originalFullRestore == null)
+            {
+                Logger.LogWarning("[ConfigurePromotionalWeaponStats] Could not find SY_FullRestoration_AbilityDef for Full Restore ability");
+                return;
+            }
+
+            // Create modified Full Restore ability
+            string modifiedAbilityName = "CPWS_ModifiedFullRestore_AbilityDef";
+            
+            // Check if already created
+            var existingAbility = repo.GetAllDefs<HealAbilityDef>().FirstOrDefault(a => a.name.Equals(modifiedAbilityName));
+            if (existingAbility == null)
+            {
+                try
+                {
+                    HealAbilityDef modifiedFullRestore = Helper.CreateDefFromClone(
+                        originalFullRestore,
+                        "CPWS-3F4E5D6A-7B8C-9D0E-AF11-2B3C4D5E6F70",
+                        modifiedAbilityName);
+
+                    // Modify the ability properties
+                    modifiedFullRestore.ActionPointCost = 0.25f; // 1 AP
+                    modifiedFullRestore.WillPointCost = 5; // 5 WP
+                    modifiedFullRestore.ConsumedCharges = 1; // 1 VVA-2 charge
+                    modifiedFullRestore.GeneralHealAmount = 400; // 400 HP healing
+                    modifiedFullRestore.BodyPartHealAmount = 400; // 400 body part restoration
+
+                    // Set display name and description
+                    modifiedFullRestore.ViewElementDef.DisplayName1 = new LocalizedTextBind("ENHANCED RESTORATION", true);
+                    modifiedFullRestore.ViewElementDef.Description = new LocalizedTextBind("Fully heal and repair target", true);
+
+                    Logger.LogInfo("[ConfigurePromotionalWeaponStats] Created modified Full Restore ability for Technician Arms");
+                    existingAbility = modifiedFullRestore;
+                }
+                catch (System.Exception e)
+                {
+                    Logger.LogError($"[ConfigurePromotionalWeaponStats] Error creating modified Full Restore ability: {e.Message}");
+                    return;
+                }
+            }
+
+            // Add the ability to Technician Arms
+            var currentAbilities = TechnicianArms.Abilities?.ToList() ?? new List<AbilityDef>();
+            if (!currentAbilities.Contains(existingAbility))
+            {
+                currentAbilities.Add(existingAbility);
+                TechnicianArms.Abilities = currentAbilities.ToArray();
+                Logger.LogInfo("[ConfigurePromotionalWeaponStats] Added modified Full Restore ability to Technician Arms");
+            }
+
+            // Register animations for the new ability so it doesn't crash on use
+            try
+            {
+                // Add to actor interaction animations (e.g., E_TechnicianHeal [Soldier_Utka_AnimActionsDef])
+                var actorInteractAnims = repo
+                    .GetAllDefs<TacActorSimpleInteractionAnimActionDef>()
+                    .Where(aad => aad != null && aad.name != null && aad.name.Contains("Soldier_Utka_AnimActionsDef"))
+                    .ToList();
+
+                // Reference abilities commonly present in the heal/restore interaction sets
+                var techHeal = repo.GetAllDefs<HealAbilityDef>().FirstOrDefault(a => a.name == "TechnicianHeal_AbilityDef");
+                var techRestore = repo.GetAllDefs<HealAbilityDef>().FirstOrDefault(a => a.name == "TechnicianRestoreBodyPart_AbilityDef");
+
+                foreach (var anim in actorInteractAnims)
+                {
+                    try
+                    {
+                        if (anim.Abilities == null) continue;
+                        bool isHealSet = anim.Abilities.Contains(techHeal) || anim.Abilities.Contains(techRestore) || anim.Abilities.Contains(originalFullRestore);
+                        if (isHealSet && !anim.Abilities.Contains((TacticalAbilityDef)existingAbility))
+                        {
+                            anim.Abilities = anim.Abilities.Append((TacticalAbilityDef)existingAbility).ToArray();
+                        }
+                    }
+                    catch { /* continue */ }
+                }
+
+                // Add to item interaction animations used by Technician Arms
+                var itemInteractAnims = repo.GetAllDefs<TacItemSimpleInteractionAnimActionDef>()?.ToList();
+                if (itemInteractAnims != null)
+                {
+                    foreach (var anim in itemInteractAnims)
+                    {
+                        try
+                        {
+                            if (anim.Abilities == null) continue;
+                            bool relatesToArmsHeal = anim.Abilities.Contains(techHeal) || anim.Abilities.Contains(techRestore) || anim.Abilities.Contains(originalFullRestore);
+                            if (relatesToArmsHeal && !anim.Abilities.Contains((TacticalAbilityDef)existingAbility))
+                            {
+                                anim.Abilities = anim.Abilities.Append((TacticalAbilityDef)existingAbility).ToArray();
+                            }
+                        }
+                        catch { /* continue */ }
+                    }
+                }
+
+                Logger.LogInfo("[ConfigurePromotionalWeaponStats] Registered modified Full Restore ability with Technician heal/restore animation sets");
+            }
+            catch (System.Exception e)
+            {
+                Logger.LogWarning($"[ConfigurePromotionalWeaponStats] Failed to register animations for modified Full Restore: {e.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Restore original damage configuration and abilities for Technician Arms
+        /// </summary>
+        private void RestoreTechnicianArms()
+        {
+            if (TechnicianArms == null)
+                return;
+                
+            // Restore original abilities
+            if (DefaultTechArmsAbilities != null)
+            {
+                TechnicianArms.Abilities = DefaultTechArmsAbilities;
+            }
+            
+            // Restore original damage configuration
+            if (DefaultTechArmsDamageKeywords != null && DefaultTechArmsDamageKeywords.Count > 0)
+            {
+                TechnicianArms.DamagePayload.DamageKeywords = DefaultTechArmsDamageKeywords;
+            }
+            
+            Logger.LogInfo("[ConfigurePromotionalWeaponStats] Restored original Technician Arms configuration");
         }
 
         /* CALCULATION FUNCTIONS */
@@ -386,6 +558,57 @@ namespace ConfigurePromotionalWeaponStats
             catch (System.Exception e)
             {
                 logger?.LogWarning("SetupNeonDeimosDamageKeywords failed: " + e);
+            }
+        }
+
+        private static void SetupTechnicianArmsDamageKeywords(WeaponDef weaponDef, float baseDamage, float piercingDamage, float paralyzingDamage, ModLogger logger)
+        {
+            try
+            {
+                if (weaponDef == null || weaponDef.DamagePayload == null) return;
+
+                // Set base damage first
+                if (weaponDef.DamagePayload.DamageKeywords != null && weaponDef.DamagePayload.DamageKeywords.Count > 0)
+                {
+                    weaponDef.DamagePayload.DamageKeywords[0].Value = baseDamage;
+                }
+
+                // Remove shock damage (replace with piercing/paralyzing)
+                RemoveDamageKeyword(weaponDef, "shock", logger);
+                
+                // Set or add new damage types
+                SetDamageKeywordValue(weaponDef, "pierc", piercingDamage, logger);
+                SetDamageKeywordValue(weaponDef, "paralysing", paralyzingDamage, logger);
+
+                logger?.LogInfo($"Set up damage keywords for {weaponDef.name}: Base={baseDamage}, Piercing={piercingDamage}, Paralyzing={paralyzingDamage}");
+            }
+            catch (System.Exception e)
+            {
+                logger?.LogWarning("SetupTechnicianArmsDamageKeywords failed: " + e);
+            }
+        }
+
+        private static void SetupTobiasHandgunDamageKeywords(WeaponDef weaponDef, float baseDamage, float piercingDamage, float shredDamage, ModLogger logger)
+        {
+            try
+            {
+                if (weaponDef == null || weaponDef.DamagePayload == null) return;
+
+                // Set base damage first
+                if (weaponDef.DamagePayload.DamageKeywords != null && weaponDef.DamagePayload.DamageKeywords.Count > 0)
+                {
+                    weaponDef.DamagePayload.DamageKeywords[0].Value = baseDamage;
+                }
+
+                // Set or add damage types
+                SetDamageKeywordValue(weaponDef, "pierc", piercingDamage, logger);
+                SetDamageKeywordValue(weaponDef, "shred", shredDamage, logger);
+
+                logger?.LogInfo($"Set up damage keywords for {weaponDef.name}: Base={baseDamage}, Piercing={piercingDamage}, Shred={shredDamage}");
+            }
+            catch (System.Exception e)
+            {
+                logger?.LogWarning("SetupTobiasHandgunDamageKeywords failed: " + e);
             }
         }
 
